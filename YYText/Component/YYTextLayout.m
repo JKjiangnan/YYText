@@ -111,7 +111,6 @@ static CGColorRef YYTextGetCGColor(CGColorRef color) {
 }
 
 + (instancetype)containerWithPath:(UIBezierPath *)path {
-    if (!path) return nil;
     YYTextContainer *one = [self new];
     one.path = path;
     return one;
@@ -388,6 +387,8 @@ dispatch_semaphore_signal(_lock);
     NSUInteger *lineRowsIndex = NULL;
     NSRange visibleRange;
     NSUInteger maximumNumberOfRows = 0;
+    BOOL constraintSizeIsExtended = NO;
+    CGRect constraintRectBeforeExtended = {0};
     
     text = text.mutableCopy;
     container = container.copy;
@@ -399,11 +400,17 @@ dispatch_semaphore_signal(_lock);
     // CoreText bug when draw joined emoji since iOS 8.3.
     // See -[NSMutableAttributedString setClearColorToJoinedEmoji] for more information.
     static BOOL needFixJoinedEmojiBug = NO;
+    // It may use larger constraint size when create CTFrame with
+    // CTFramesetterCreateFrame in iOS 10.
+    static BOOL needFixLayoutSizeBug = NO;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         double systemVersionDouble = [UIDevice currentDevice].systemVersion.doubleValue;
         if (8.3 <= systemVersionDouble && systemVersionDouble < 9) {
             needFixJoinedEmojiBug = YES;
+        }
+        if (systemVersionDouble >= 10) {
+            needFixLayoutSizeBug = YES;
         }
     });
     if (needFixJoinedEmojiBug) {
@@ -418,7 +425,18 @@ dispatch_semaphore_signal(_lock);
     
     // set cgPath and cgPathBox
     if (container.path == nil && container.exclusionPaths.count == 0) {
+        if (container.size.width <= 0 || container.size.height <= 0) goto fail;
         CGRect rect = (CGRect) {CGPointZero, container.size };
+        if (needFixLayoutSizeBug) {
+            constraintSizeIsExtended = YES;
+            constraintRectBeforeExtended = UIEdgeInsetsInsetRect(rect, container.insets);
+            constraintRectBeforeExtended = CGRectStandardize(constraintRectBeforeExtended);
+            if (container.isVerticalForm) {
+                rect.size.width = YYTextContainerMaxSize.width;
+            } else {
+                rect.size.height = YYTextContainerMaxSize.height;
+            }
+        }
         rect = UIEdgeInsetsInsetRect(rect, container.insets);
         rect = CGRectStandardize(rect);
         cgPathBox = rect;
@@ -510,6 +528,19 @@ dispatch_semaphore_signal(_lock);
         
         YYTextLine *line = [YYTextLine lineWithCTLine:ctLine position:position vertical:isVerticalForm];
         CGRect rect = line.bounds;
+        
+        if (constraintSizeIsExtended) {
+            if (isVerticalForm) {
+                if (rect.origin.x + rect.size.width >
+                    constraintRectBeforeExtended.origin.x +
+                    constraintRectBeforeExtended.size.width) break;
+            } else {
+                if (rect.origin.y + rect.size.height >
+                    constraintRectBeforeExtended.origin.y +
+                    constraintRectBeforeExtended.size.height) break;
+            }
+        }
+        
         BOOL newRow = YES;
         if (rowMaySeparated && position.x != lastPosition.x) {
             if (isVerticalForm) {
@@ -2220,7 +2251,7 @@ static void YYTextDrawRun(YYTextLine *line, CTRunRef run, CGContextRef context, 
         
         CGContextSaveGState(context); {
             CGContextSetFillColorWithColor(context, fillColor);
-            if (!strokeWidth || strokeWidth.floatValue == 0) {
+            if (strokeWidth == nil || strokeWidth.floatValue == 0) {
                 CGContextSetTextDrawingMode(context, kCGTextFill);
             } else {
                 CGColorRef strokeColor = (CGColorRef)CFDictionaryGetValue(runAttrs, kCTStrokeColorAttributeName);
@@ -2870,7 +2901,7 @@ static void YYTextDrawDecoration(YYTextLayout *layout, CGContextRef context, CGS
                     color = (__bridge CGColorRef)(attrs[(id)kCTForegroundColorAttributeName]);
                     color = YYTextGetCGColor(color);
                 }
-                CGFloat thickness = underline.width ? underline.width.floatValue : lineThickness;
+                CGFloat thickness = (underline.width != nil) ? underline.width.floatValue : lineThickness;
                 YYTextShadow *shadow = underline.shadow;
                 while (shadow) {
                     if (!shadow.color) {
@@ -2899,7 +2930,7 @@ static void YYTextDrawDecoration(YYTextLayout *layout, CGContextRef context, CGS
                     color = (__bridge CGColorRef)(attrs[(id)kCTForegroundColorAttributeName]);
                     color = YYTextGetCGColor(color);
                 }
-                CGFloat thickness = strikethrough.width ? strikethrough.width.floatValue : lineThickness;
+                CGFloat thickness = (strikethrough.width != nil) ? strikethrough.width.floatValue : lineThickness;
                 YYTextShadow *shadow = underline.shadow;
                 while (shadow) {
                     if (!shadow.color) {
